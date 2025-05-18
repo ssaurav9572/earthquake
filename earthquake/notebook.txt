@@ -1,0 +1,145 @@
+bronze
+
+from datetime import date,timedelta
+#start_date=date.today()-timedelta(7)
+#end_date=date.today()-timedelta(1)
+url=url = f"https://earthquake.usgs.gov/fdsnws/event/1/query?format=geojson&starttime={start_date}&endtime={end_date}"
+print(url)
+
+
+# Welcome to your new notebook
+# Type here in the cell editor to add code!
+import requests
+import json
+# Construct the API URL with start and end dates provided by Data Factory, formatted for geojson output.
+url = f"https://earthquake.usgs.gov/fdsnws/event/1/query?format=geojson&starttime={start_date}&endtime={end_date}"
+# Make the GET request to fetch data
+response = requests.get(url)
+# Check if the request was successful
+if response.status_code == 200:
+    # Get the JSON response
+    data = response.json()
+    data = data['features']  
+    # Specify the file name (and path if needed)
+    file_path = f'/lakehouse/default/Files/{start_date}_earthquake_data.json'
+    # Open the file in write mode ('w') and save the JSON data
+    with open(file_path, 'w') as file:
+        # The `json.dump` method serializes `data` as a JSON formatted stream to `file`
+        # `indent=4` makes the file human-readable by adding whitespace
+        json.dump(data, file, indent=4)
+    print(f"Data successfully saved to {file_path}")
+else:
+    print("Failed to fetch data. Status code:", response.status_code)
+
+
+df = spark.read.option("multiline", "true").json("Files/2025-05-10_earthquake_data.json")
+# df now is a Spark DataFrame containing JSON data from "Files/2025-05-10_earthquake_data.json".
+#display(df)
+
+
+
+silver
+
+from pyspark.sql.functions import col
+from pyspark.sql.types import TimestampType
+
+
+from datetime import date,timedelta
+#start_date=date.today()-timedelta(7)
+df = spark.read.option("multiline", "true").json(f"Files/{start_date}_earthquake_data.json")
+
+
+
+# Welcome to your new notebook
+# Type here in the cell editor to add code!
+# df now is a Spark DataFrame containing JSON data
+# Reshape earthquake data by extracting and renaming key attributes for further analysis.
+df = \
+df.\
+    select(
+        'id',
+        col('geometry.coordinates').getItem(0).alias('longitude'),
+        col('geometry.coordinates').getItem(1).alias('latitude'),
+        col('geometry.coordinates').getItem(2).alias('elevation'),
+        col('properties.title').alias('title'),
+        col('properties.place').alias('place_description'),
+        col('properties.sig').alias('sig'),
+        col('properties.mag').alias('mag'),
+        col('properties.magType').alias('magType'),
+        col('properties.time').alias('time'),
+        col('properties.updated').alias('updated')
+        )
+
+
+
+# Convert 'time' and 'updated' columns from milliseconds to timestamp format for clearer datetime representation.
+df = df.\
+    withColumn('time', col('time')/1000).\
+    withColumn('updated', col('updated')/1000).\
+    withColumn('time', col('time').cast(TimestampType())).\
+    withColumn('updated', col('updated').cast(TimestampType()))
+     
+
+
+# appending the data to the gold table
+df.write.mode('append').saveAsTable('earthquake_events_silver')
+
+
+
+
+gold
+
+
+# Welcome to your new notebook
+# Type here in the cell editor to add code!
+from pyspark.sql.functions import when, col, udf
+from pyspark.sql.types import StringType
+# ensure the below library is installed on your fabric environment
+import reverse_geocoder as rg
+     
+
+from datetime import date,timedelta
+#start_date=date.today()-timedelta(7)
+df = spark.read.table("earthquake_events_silver").filter(col('time') > start_date)
+
+
+def get_country_code(lat, lon):
+    """
+    Retrieve the country code for a given latitude and longitude.
+
+    Parameters:
+    lat (float or str): Latitude of the location.
+    lon (float or str): Longitude of the location.
+
+    Returns:
+    str: Country code of the location, retrieved using the reverse geocoding API.
+
+    Example:
+    >>> get_country_details(48.8588443, 2.2943506)
+    'FR'
+    """
+    coordinates = (float(lat), float(lon))
+    return rg.search(coordinates)[0].get('cc')
+
+# registering the udfs so they can be used on spark dataframes
+get_country_code_udf = udf(get_country_code, StringType())
+
+# adding country_code and city attributes
+df_with_location = \
+                df.\
+                    withColumn("country_code", get_country_code_udf(col("latitude"), col("longitude")))
+
+# adding significance classification
+df_with_location_sig_class = \
+                            df_with_location.\
+                                withColumn('sig_class', 
+                                            when(col("sig") < 100, "Low").\
+                                            when((col("sig") >= 100) & (col("sig") < 500), "Moderate").\
+                                            otherwise("High")
+                                            )
+     
+
+
+
+# appending the data to the gold table
+df_with_location_sig_class.write.mode('append').saveAsTable('earthquake_events_gold')

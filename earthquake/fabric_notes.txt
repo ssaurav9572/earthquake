@@ -1,0 +1,18 @@
+project-
+fabric
+lakehouse
+delta table
+medallion architecture
+pipeline
+
+steps-
+first create workspace
+then create lakehouse
+then create notebooks in which bronze layer ,silver layer and gold layer notebooks should be there
+then if you are using any external library then create your own environment and not the default one
+then create data pipeline enter parameters(if want data to be dynamically fetched)
+
+for power bi
+go to lakehouse
+choose sql analytics and then go to default semantics and then select gold layer file.
+then open it on power bi , get data published semantics models.
